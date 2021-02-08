@@ -5,6 +5,9 @@ import glob
 import os.path
 import skimage.io as io
 from typing import Dict, Callable
+import src.transforms as t
+
+import matplotlib.pyplot as plt
 
 
 class dataset(DataLoader):
@@ -33,9 +36,11 @@ class dataset(DataLoader):
             image = torch.from_numpy(io.imread(image_path).astype(np.uint16) / 2 ** 16).unsqueeze(-1)
 
             image = image.transpose(1, 3).transpose(0, -1).squeeze().unsqueeze(0)
-            mask = torch.from_numpy(io.imread(f)).transpose(0, 2).unsqueeze(0)                           # Import Mask
+            mask = torch.from_numpy(io.imread(f)).transpose(0,-1).transpose(0,1).unsqueeze(0).int()                    # Import Mask
 
-            self.mask.append(mask.float())
+
+
+            self.mask.append(mask.int())
             self.image.append(image.float())
             self.centroids.append(torch.tensor([0]))
 
@@ -66,16 +71,21 @@ class dataset(DataLoader):
 
         item = self.index[item]  # Get a random index here
 
-        data_dict = {'image': self.image[item], 'masks': self.mask[item], 'centroids': self.centroids[item]}
         did_we_get_an_output = False
 
         while not did_we_get_an_output:
             try:
                 if self.transforms is not None:
+                    data_dict = {'image': self.image[item], 'masks': self.mask[item], 'centroids': self.centroids[item]}
                     data_dict = self.transforms(data_dict)
-                    did_we_get_an_output = True
+                    data_dict = t.colormask_to_mask()(data_dict)
+                    data_dict = t.adjust_centroids()(data_dict)
+
+                    did_we_get_an_output = True if data_dict['masks'].shape[0] > 0 else False
+
             except RuntimeError:
                 continue
+
 
         return data_dict
 

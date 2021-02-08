@@ -34,7 +34,7 @@ class save_image:
 
 
 class nul_crop:
-    def __init__(self, rate: float = 0.80) -> None:
+    def __init__(self, rate: float = 1) -> None:
         self.rate = rate
 
     def __call__(self, data_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -430,27 +430,23 @@ class adjust_centroids:
 
         shape = data_dict['masks'].shape
         device = data_dict['masks'].device
-        centroid = torch.zeros(shape[0], 3, dtype=torch.float)
+        centroid = torch.zeros(shape[0], 3, dtype=torch.float).to(device)
         ind = torch.ones(shape[0], dtype=torch.long)
 
         for i in range(shape[0]):  # num of instances
-            data_dict['masks'][i, ...] = self._remove_edge_cells(data_dict['masks'][i, ...])
-            indexes = torch.nonzero(data_dict['masks'][i, ...] > 0).float()
+            data_dict['masks'][i, ...] = self._remove_edge_cells(data_dict['masks'][i, ...]).to(device)
+            indexes = torch.nonzero(data_dict['masks'][i, ...] > 0).float().to(device)
 
-            #
             if indexes.shape[0] == 0:
-                centroid[i, :] = torch.tensor([-1, -1, -1])
+                centroid[i, :] = torch.tensor([-1, -1, -1]).to(device)
                 ind[i] = 0
-            # else:
-            #     centroid[i, :] = torch.mean(indexes, dim=0)
             else:
                 z_max = indexes[..., -1].max()
                 z_min = indexes[..., -1].min()
-                z = torch.round((z_max - z_min)/2 + z_min) - 2
+                z = torch.round((z_max - z_min)/2 + z_min).to(device).unsqueeze(0)
 
                 indexes = indexes[indexes[..., -1] == z, :]
-
-                centroid[i, :] = torch.cat((torch.mean(indexes, dim=0)[0:2], torch.tensor([z]))).float()
+                centroid[i, :] = torch.cat((torch.mean(indexes, dim=0)[0:2], z)).float()
 
 
         data_dict['centroids'] = centroid[ind.bool()].to(device)
@@ -506,7 +502,7 @@ class colormask_to_mask:
         return data_dict
 
     @staticmethod
-    @torch.jit.script
+    # @torch.jit.script
     def _colormask_to_torch_mask(colormask: torch.Tensor) -> torch.Tensor:
         """
 

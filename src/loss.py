@@ -34,8 +34,6 @@ class jaccard_loss:
         assert not torch.isnan(intersection)
         assert not torch.isnan(union)
 
-
-
         return 1.0 - (intersection/union)
 
 
