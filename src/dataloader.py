@@ -4,15 +4,21 @@ import numpy as np
 import glob
 import os.path
 import skimage.io as io
-from typing import Dict
+from typing import Dict, Callable
 
-import src.transforms as t
 
 class dataset(DataLoader):
-    def __init__(self, path, transforms=None, random_ind: bool = False):
+    def __init__(self, path: str = None, transforms: Callable = None, random_ind: bool = False):
+        """
+        Loads data into a dataset structure for training deep learning architecture.
+
+        :param path: str - Path to data
+        :param transforms: Callable Function of transforms
+        :param random_ind: Bool - If True, shuffles data every time self.step() is called
+        """
         super(DataLoader, self).__init__()
 
-        # Find only files
+        # Find only files with a label
         files = glob.glob(os.path.join(path, '*.labels.tif'))
 
         self.mask = []
@@ -20,26 +26,18 @@ class dataset(DataLoader):
         self.centroids = []
         self.transforms = transforms
 
-
+        # Load in all files and convert to float
         for f in files:
             image_path = os.path.splitext(f)[0]
             image_path = os.path.splitext(image_path)[0] + '.tif'
             image = torch.from_numpy(io.imread(image_path).astype(np.uint16) / 2 ** 16).unsqueeze(-1)
 
-
-            if image.shape[-1] > 1:
-                image = image.transpose(1, 3).transpose(0, -1).squeeze()[[0, 2, 3], ...]
-            else:
-                image = image.transpose(1, 3).transpose(0, -1).squeeze().unsqueeze(0)
-
-
-
-            mask = torch.from_numpy(io.imread(f)).transpose(0, 2).unsqueeze(0)
+            image = image.transpose(1, 3).transpose(0, -1).squeeze().unsqueeze(0)
+            mask = torch.from_numpy(io.imread(f)).transpose(0, 2).unsqueeze(0)                           # Import Mask
 
             self.mask.append(mask.float())
             self.image.append(image.float())
             self.centroids.append(torch.tensor([0]))
-
 
         # implement random permutations of the indexing
         self.random_ind = random_ind
@@ -50,11 +48,24 @@ class dataset(DataLoader):
             self.index = torch.arange((len(self.mask)))
 
     def __len__(self) -> int:
+        """
+        :return: int - number of training pairs
+        """
         return len(self.mask)
 
     def __getitem__(self, item: int) -> Dict[str, torch.Tensor]:
+        """
+        Retrieves training dictionary
 
-        item = self.index[item]
+        :param item: int - index of image
+        :return:  Dict[str, torch.Tensor] {'image': torch.Tensor, 'masks': torch.Tensor, 'centroids': torch.Tensor}
+                        image:         [C, X, Y, Z]
+                        masks:         [N, X, Y, Z]
+                        centroids:     [N, X, Y, Z]
+        """
+
+        item = self.index[item]  # Get a random index here
+
         data_dict = {'image': self.image[item], 'masks': self.mask[item], 'centroids': self.centroids[item]}
         did_we_get_an_output = False
 

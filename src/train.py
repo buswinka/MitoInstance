@@ -39,78 +39,35 @@ data = src.dataloader.dataset('/media/DataStorage/Dropbox (Partners HealthCare)/
                               transforms=transforms)
 data = DataLoader(data, batch_size=1, shuffle=False, num_workers=0)
 
-transforms = torchvision.transforms.Compose([
-    t.adjust_centroids()
-])
-
-val = src.dataloader.dataset('/media/DataStorage/Dropbox (Partners HealthCare)/HairCellInstance/data/validate',
-                             transforms=transforms)
-val = DataLoader(val, batch_size=1, shuffle=False, num_workers=0)
-
 epoch_range = trange(epochs, desc='Loss: {1.00000}', leave=True)
 
+sigma = torch.tensor([0.0008])
+
 for e in epoch_range:
-    time_1 = time.clock_gettime_ns(1)
     epoch_loss = []
     model.train()
     for data_dict in data:
-        image = data_dict['image']
-        image = (image - 0.5) / 0.5
+        image = (data_dict['image'] - 0.5) / 0.5
         mask = data_dict['masks'] > 0.5
         centroids = data_dict['centroids']
 
-        optimizer.zero_grad()
+        optimizer.zero_grad()                                                                      # Zero Gradients
 
-        out = model(image.cuda(), 5)
-        assert out.requires_grad
+        out = model(image.cuda(), 5)                                                               # Eval Model
+        out = src.functional.vector_to_embedding(out[:, 0:3:1, ...])                               # Calculate Embedding
+        out = src.functional.embedding_to_probability(out, centroids.cuda(), sigma)                # Generate Prob Map
 
-        sigma = torch.sigmoid(out[:, -3::, ...])
-        assert sigma.requires_grad
-
-        out = src.functional.vector_to_embedding(out[:, 0:3:1, ...])
-        assert out.requires_grad
-
-        out = src.functional.embedding_to_probability(out, centroids.cuda(), sigma)
-        assert out.requires_grad
-
-        # This is jank
-        loss = loss_fun(out, mask.cuda())
-
-        loss.backward()
-        optimizer.step()
+        loss = loss_fun(out, mask.cuda())                                                          # Calculate Loss
+        loss.backward()                                                                            # Backpropagation
+        optimizer.step()                                                                           # Update Adam
 
         epoch_loss.append(loss.detach().cpu().item())
 
     epoch_range.desc = 'Loss: ' + '{:.5f}'.format(torch.tensor(epoch_loss).mean().item())
-
-    del out, sigma, image, mask, centroids, loss
-
     writer.add_scalar('Loss/train', torch.mean(torch.tensor(epoch_loss)).item(), e)
+    torch.save(model.state_dict(), 'modelfiles' + writer.log_dir + '.hcnet')
 
-    time_2 = time.clock_gettime_ns(1)
-    delta_time = np.round((np.abs(time_2 - time_1) / 1e9) / 60, decimals=2)
 
-    with torch.no_grad():
-        val_loss = []
-        model.eval()
-        for data_dict in val:
-            image = data_dict['image']
-            image = (image - 0.5) / 0.5
-            mask = data_dict['masks'] > 0.5
-            centroids = data_dict['centroids']
-
-            out = model(image.cuda(), 5)
-            sigma = out[:, -1, ...]
-            out = src.functional.vector_to_embedding(out[:, 0:3:1, ...])
-            out = src.functional.embedding_to_probability(out, centroids.cuda(), sigma)
-            loss = loss_fun(out, mask.cuda())
-
-            val_loss.append(loss.item())
-        val_loss = torch.tensor(val_loss).mean()
-    writer.add_scalar('Loss/validate', val_loss.item(), e)
-    del loss, image, mask, val_loss, sigma
-
-torch.save(model.state_dict(), 'overtrained_model_hcnet_long.mdl')
 
 render = (out > 0.5).int().squeeze(0)
 for i in range(render.shape[0]):
