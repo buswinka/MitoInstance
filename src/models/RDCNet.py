@@ -38,6 +38,6 @@ class RDCNet(nn.Module):
             y = self.RDCblock(in_) + y
 
         y = self.activation(self.batch_norm_transpose(self.transposed_conv(y)))
-        y = self.out_conv(y)
+        y = torch.tanh(self.out_conv(y))
 
         return y

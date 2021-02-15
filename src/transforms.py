@@ -179,7 +179,7 @@ class random_h_flip:
 
 
 class normalize:
-    def __init__(self, mean: Sequence[float] = (0.5), std: Sequence[float] = (0.5)) -> None:
+    def __init__(self, mean: Sequence[float] = (0.5,), std: Sequence[float] = (0.5,)) -> None:
         self.mean = mean
         self.std = std
         self.fun = torch.jit.script(torchvision.transforms.functional.normalize)
@@ -223,8 +223,8 @@ class random_noise:
         """
         if torch.rand(1).item() < self.rate:
             device = data_dict['masks'].device
-            noise = torch.rand(data_dict['image'].shape).to(device) * torch.tensor([self.gamma]).to(device)
-            data_dict['image'] = data_dict['image'] + noise
+            noise = torch.rand(data_dict['image'].shape, device=device) * torch.tensor([self.gamma], device=device)
+            data_dict['image'] += noise
 
         return data_dict
 
@@ -259,15 +259,33 @@ class adjust_brightness:
     def __init__(self, rate: float = 0.5, range_brightness: Tuple[float, float] = (-0.5, 0.5)) -> None:
         self.rate = rate
         self.range = range_brightness
-        self.fun = _adjust_brightness
+        self.fun = self._adjust_brightness
 
     def __call__(self, data_dict):
         if torch.rand(1) < self.rate:
+            if data_dict['image'].device == 'cuda':
+                val = torch.cuda.FloatTensor(data_dict['image'].shape[0]).uniform_(self.range[0], self.range[1])
+            else:
+                val = torch.FloatTensor(data_dict['image'].shape[0]).uniform_(self.range[0], self.range[1])
             # funky looking but FAST
-            val = torch.FloatTensor(data_dict['image'].shape[0]).uniform_(self.range[0], self.range[1])
             data_dict['image'] = self.fun(data_dict['image'], val)
 
         return data_dict
+
+    @staticmethod
+    @torch.jit.script
+    def _adjust_brightness(img: torch.Tensor, val: torch.Tensor) -> torch.Tensor:
+        """
+        Adjusts brigtness of img with val
+
+        :param img: [C, X, Y, Z]
+        :param val: Tensor[float] [C]
+        :return:
+        """
+        img = img.add_(val.view(img.shape[0], 1, 1, 1))
+        img[img < 0] = 0
+        img[img > 1] = 1
+        return img
 
 
 class adjust_gamma:
@@ -296,9 +314,24 @@ class adjust_gamma:
             gamma = torch.FloatTensor(data_dict['image'].shape[0]).uniform_(self.gamma[0], self.gamma[1])
             gain = torch.FloatTensor(data_dict['image'].shape[0]).uniform_(self.gain[0], self.gain[1])
 
-            data_dict['image'] = _adjust_gamma(data_dict['image'], gamma, gain)
+            data_dict['image'] = self._adjust_gamma(data_dict['image'], gamma, gain)
 
         return data_dict
+
+    @staticmethod
+    @torch.jit.script
+    def _adjust_gamma(img: torch.Tensor, gamma: torch.Tensor, gain: torch.Tensor) -> torch.Tensor:
+        """
+        Assume img in shape [C, X, Y, Z]
+
+        :param img:
+        :param gamma:
+        :param gain:
+        :return:
+        """
+        for c in range(img.shape[0]):
+            img[c, ...] = torchvision.transforms.functional.adjust_gamma(img[c, ...], gamma=gamma[c], gain=gain[c])
+        return img
 
 
 class elastic_deformation:
@@ -357,10 +390,51 @@ class random_affine:
             scale = torch.FloatTensor(1).uniform_(self.scale[0], self.scale[1])
             translate = torch.tensor([0, 0])
 
-            data_dict['image'] = _reshape(_affine(_shape(data_dict['image']), angle, translate, scale, shear))
-            data_dict['masks'] = _reshape(_affine(_shape(data_dict['masks']), angle, translate, scale, shear))
+            data_dict['image'] = _reshape(self._affine(_shape(data_dict['image']), angle, translate, scale, shear))
+            data_dict['masks'] = _reshape(self._affine(_shape(data_dict['masks']), angle, translate, scale, shear))
 
         return data_dict
+
+    @staticmethod
+    @torch.jit.script
+    def _affine(img: torch.Tensor, angle: torch.Tensor, translate: torch.Tensor, scale: torch.Tensor,
+                shear: torch.Tensor) -> torch.Tensor:
+        """
+        Not to be publicly accessed! Only called through src.transforms.affine
+
+        A jit scriptable wrapped version of torchvision.transforms.functional.affine
+        Cannot, by rule, pass a dict to a torchscript function, necessitating this function
+
+
+        WARNING: Performs an affine transformation on the LAST TWO DIMENSIONS
+        ------------------------------------------------------------------------------------------------------------
+            call _shape(img) prior to _affine such that this transformation is performed on the X and Y dimensions
+            call _reshape on the output of _affine to return to [C, X, Y, Z]
+
+            correct implementation looks like
+             ```python
+             from src.transforms import _shape, _reshape, _affine
+             angle = torch.tensor([0])
+             scale = torch.tensor([0])
+             shear = torch.tensor([0])
+             translate = torch.tensor([0])
+             transformed_image = _reshape(_affine(_shape(img), angle, translate, scale, shear))
+
+             ```
+
+
+        :param img: torch.Tensor from data_dict of shape [..., X, Y]
+        :param angle: torch.Tensor float in degrees
+        :param translate: torch.Tensor translation factor. If zero, any transformations are done around center of image
+        :param scale: torch.Tensor float Scale factor of affine transformation, if 1, no scaling is performed
+        :param shear: torch.Tensor float shear factor of affine transformation, if 0, no shearing is performed
+        :return: torch.Tensor
+        """
+        angle = float(angle.item())
+        scale = float(scale.item())
+        shear = [float(shear.item())]
+        translate_list = [int(translate[0].item()), int(translate[1].item())]
+        return torchvision.transforms.functional.affine(img, angle, translate_list, scale, shear)
 
 
 class to_cuda:
@@ -430,26 +504,25 @@ class adjust_centroids:
 
         shape = data_dict['masks'].shape
         device = data_dict['masks'].device
-        centroid = torch.zeros(shape[0], 3, dtype=torch.float).to(device)
-        ind = torch.ones(shape[0], dtype=torch.long)
+        centroid = torch.zeros(shape[0], 3, dtype=torch.float, device=device)
+        ind = torch.ones(shape[0], dtype=torch.long, device=device)
 
         for i in range(shape[0]):  # num of instances
             data_dict['masks'][i, ...] = self._remove_edge_cells(data_dict['masks'][i, ...]).to(device)
-            indexes = torch.nonzero(data_dict['masks'][i, ...] > 0).float().to(device)
+            indexes = torch.nonzero(data_dict['masks'][i, ...].gt(0)).float()
 
             if indexes.shape[0] == 0:
-                centroid[i, :] = torch.tensor([-1, -1, -1]).to(device)
+                centroid[i, :] = torch.tensor([-1, -1, -1], device=device)
                 ind[i] = 0
             else:
                 z_max = indexes[..., -1].max()
                 z_min = indexes[..., -1].min()
-                z = torch.round((z_max - z_min)/2 + z_min).to(device).unsqueeze(0)
+                z = torch.round((z_max - z_min) / 2 + z_min).unsqueeze(0)
 
                 indexes = indexes[indexes[..., -1] == z, :]
                 centroid[i, :] = torch.cat((torch.mean(indexes, dim=0)[0:2], z)).float()
 
-
-        data_dict['centroids'] = centroid[ind.bool()].to(device)
+        data_dict['centroids'] = centroid[ind.bool()]
         data_dict['masks'] = data_dict['masks'][ind.bool(), :, :, :]
 
         return data_dict
@@ -458,16 +531,21 @@ class adjust_centroids:
     @torch.jit.script
     def _remove_edge_cells(image: torch.Tensor) -> torch.Tensor:
         """
-        meant to take in an bool tensor - if any positive value is touching the edges, remove it!
+        Takes in an mask containing a single cell. If the total cell volume is small and touching a border, remove it!
 
         :param image: [X, Y, Z]
         :return:
         """
 
         ind = torch.nonzero(image)
+
+        min_volume = 500  # In voxels
+
         for i in range(2):
-            remove_bool = torch.any(ind[:, i] == 0) or torch.any(ind[:, i] == image.shape[i]-1)
-            remove_bool = remove_bool if torch.sum(image) < 3000 else False
+            remove_bool = torch.any(ind[:, i] == 0) or torch.any(
+                ind[:, i] == image.shape[i] - 1)  # Is a mask touching a border?
+            remove_bool = remove_bool if torch.sum(
+                image) < min_volume else False  # If so and its volume is small, remove it
 
             # Remove cell if it touches the edge and is small
             if remove_bool:
@@ -502,24 +580,26 @@ class colormask_to_mask:
         return data_dict
 
     @staticmethod
-    # @torch.jit.script
+    @torch.jit.script
     def _colormask_to_torch_mask(colormask: torch.Tensor) -> torch.Tensor:
         """
 
         :param colormask: [C=1, X, Y, Z]
         :return:
         """
+        device = colormask.device
         uni = torch.unique(colormask)
         uni = uni[uni != 0]
         num_cells = len(uni)
 
         shape = (num_cells, colormask.shape[1], colormask.shape[2], colormask.shape[3])
-        mask = torch.zeros(shape)
+        mask = torch.zeros(shape, device=device)
 
         for i, u in enumerate(uni):
             mask[i, :, :, :] = (colormask[0, :, :, :] == u)
 
         return mask
+
 
 class debug:
     def __init__(self, ind: int = 0):
@@ -542,47 +622,6 @@ class debug:
             raise ex
 
         return data_dict
-
-
-@torch.jit.script
-def _affine(img: torch.Tensor, angle: torch.Tensor, translate: torch.Tensor, scale: torch.Tensor,
-            shear: torch.Tensor) -> torch.Tensor:
-    """
-    Not to be publicly accessed! Only called through src.transforms.affine
-
-    A jit scriptable wrapped version of torchvision.transforms.functional.affine
-    Cannot, by rule, pass a dict to a torchscript function, necessitating this function
-
-
-    WARNING: Performs an affine transformation on the LAST TWO DIMENSIONS
-    ------------------------------------------------------------------------------------------------------------
-        call _shape(img) prior to _affine such that this transformation is performed on the X and Y dimensions
-        call _reshape on the output of _affine to return to [C, X, Y, Z]
-
-        correct implementation looks like
-         ```python
-         from src.transforms import _shape, _reshape, _affine
-         angle = torch.tensor([0])
-         scale = torch.tensor([0])
-         shear = torch.tensor([0])
-         translate = torch.tensor([0])
-         transformed_image = _reshape(_affine(_shape(img), angle, translate, scale, shear))
-
-         ```
-
-
-    :param img: torch.Tensor from data_dict of shape [..., X, Y]
-    :param angle: torch.Tensor float in degrees
-    :param translate: torch.Tensor translation factor. If zero, any transformations are done around center of image
-    :param scale: torch.Tensor float Scale factor of affine transformation, if 1, no scaling is performed
-    :param shear: torch.Tensor float shear factor of affine transformation, if 0, no shearing is performed
-    :return: torch.Tensor
-    """
-    angle = float(angle.item())
-    scale = float(scale.item())
-    shear = [float(shear.item())]
-    translate_list = [int(translate[0].item()), int(translate[1].item())]
-    return torchvision.transforms.functional.affine(img, angle, translate_list, scale, shear)
 
 
 @torch.jit.script
@@ -636,36 +675,6 @@ def _crop(img: torch.Tensor, x: int, y: int, z: int, w: int, h: int, d: int) -> 
     else:
         raise IndexError('Unsupported number of dimensions')
 
-    return img
-
-
-@torch.jit.script
-def _adjust_brightness(img: torch.Tensor, val: torch.Tensor) -> torch.Tensor:
-    """
-    Adjusts brigtness of img with val
-
-    :param img: [C, X, Y, Z]
-    :param val: Tensor[float] [C]
-    :return:
-    """
-    img = img.add_(val.reshape(img.shape[0], 1, 1, 1).to(img.device))
-    img[img < 0] = 0
-    img[img > 1] = 1
-    return img
-
-
-@torch.jit.script
-def _adjust_gamma(img: torch.Tensor, gamma: torch.Tensor, gain: torch.Tensor) -> torch.Tensor:
-    """
-    Assume img in shape [C, X, Y, Z]
-    
-    :param img: 
-    :param gamma: 
-    :param gain: 
-    :return: 
-    """
-    for c in range(img.shape[0]):
-        img[c, ...] = torchvision.transforms.functional.adjust_gamma(img[c, ...], gamma=gamma[c], gain=gain[c])
     return img
 
 

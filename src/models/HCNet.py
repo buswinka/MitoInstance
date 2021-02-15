@@ -3,7 +3,8 @@ import torch.nn as nn
 from src.models.modules.HCBlock import HCBlock
 from warnings import filterwarnings
 
-
+import glob
+from typing import Sequence
 filterwarnings("ignore", category=UserWarning)
 
 
@@ -32,19 +33,24 @@ class HCNet(nn.Module):
         self.out_conv = nn.Conv3d(complexity*3, out_channels=out_channels, kernel_size=1, padding=0)
 
         self.activation = nn.LeakyReLU()
+        self.tanh = nn.Tanh()
 
     def forward(self, x: torch.Tensor, i: int = 5) -> torch.Tensor:
         x = self.activation(self.bn_1(self.conv3x3_1(x)))
         x = self.activation(self.bn_strided(self.strided_conv(x)))
-        y = torch.zeros(x.shape).to(x.device)
+        y = torch.zeros(x.shape, device=x.device)
 
         for t in range(i):
-            in_ = torch.cat((x, y), dim=1)
-            y = self.hcblock(in_) + y
+            y = self.hcblock(torch.cat((x, y), dim=1)) + y
+
+        y = self.activation(y)  # NEW FOR MITO
 
         y = self.activation(self.batch_norm_transpose(self.transposed_conv(y)))
         y = self.activation(self.bn_5x5_1(self.conv5x5_1(y)))
         y = self.activation(self.bn_2(self.conv3x3_2(y)))
         y = self.out_conv(y)
 
+        y = self.tanh(y)
+
         return y
+

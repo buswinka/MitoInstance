@@ -20,41 +20,6 @@ import GPy
 import torchvision.ops
 
 
-@torch.jit.script
-def calculate_vector(mask: torch.Tensor) -> torch.Tensor:
-    """
-    Have to use a fixed deltas for each pixel
-    else it is size variant and doenst work for big images...
-
-    :param mask:
-    :return: [1,1,x,y,z] vector to the center of mask
-    """
-    x_factor = 1 / 512
-    y_factor = 1 / 512
-    z_factor = 1 / 512
-
-    # com = torch.zeros(mask.shape)
-    vector = torch.zeros((1, 3, mask.shape[2], mask.shape[3], mask.shape[4]))
-    xv, yv, zv = torch.meshgrid([torch.linspace(0, x_factor * mask.shape[2], mask.shape[2]),
-                                 torch.linspace(0, y_factor * mask.shape[3], mask.shape[3]),
-                                 torch.linspace(0, z_factor * mask.shape[4], mask.shape[4])])
-
-    for u in torch.unique(mask):
-        if u == 0:
-            continue
-        index = ((mask == u).nonzero()).float().mean(dim=0)
-
-        # Set between 0 and 1
-        index[2] = index[2] / mask.shape[2]
-        index[3] = index[3] / mask.shape[3]
-        index[4] = index[4] / mask.shape[4]
-
-        vector[0, 0, :, :, :][mask[0, 0, :, :, :] == u] = -xv[mask[0, 0, :, :, :] == u] + index[2]
-        vector[0, 1, :, :, :][mask[0, 0, :, :, :] == u] = -yv[mask[0, 0, :, :, :] == u] + index[3]
-        vector[0, 2, :, :, :][mask[0, 0, :, :, :] == u] = -zv[mask[0, 0, :, :, :] == u] + index[4]
-
-    return vector
-
 
 @torch.jit.script
 def vector_to_embedding(vector: torch.Tensor) -> torch.Tensor:
@@ -64,17 +29,17 @@ def vector_to_embedding(vector: torch.Tensor) -> torch.Tensor:
     :param vector:
     :return:
     """
-    x_factor = 1 / 512
-    y_factor = 1 / 512
-    z_factor = 1 / 512
+    x_factor = 1 / 256
+    y_factor = 1 / 256
+    z_factor = 1 / 256
 
-    xv, yv, zv = torch.meshgrid([torch.linspace(0, x_factor * vector.shape[2], vector.shape[2]),
-                                 torch.linspace(0, y_factor * vector.shape[3], vector.shape[3]),
-                                 torch.linspace(0, z_factor * vector.shape[4], vector.shape[4])])
+    xv, yv, zv = torch.meshgrid([torch.linspace(0, x_factor * vector.shape[2], vector.shape[2], device=vector.device),
+                                 torch.linspace(0, y_factor * vector.shape[3], vector.shape[3], device=vector.device),
+                                 torch.linspace(0, z_factor * vector.shape[4], vector.shape[4], device=vector.device)])
 
     mesh = torch.cat((xv.unsqueeze(0).unsqueeze(0),
                       yv.unsqueeze(0).unsqueeze(0),
-                      zv.unsqueeze(0).unsqueeze(0)), dim=1).to(vector.device)
+                      zv.unsqueeze(0).unsqueeze(0)), dim=1)
 
     return mesh + vector
 
@@ -95,9 +60,9 @@ def embedding_to_probability(embedding: torch.Tensor, centroids: torch.Tensor, s
     :return: [B, I, X, Y, Z] of probabilities for instance I
     """
 
-    sigma = sigma + 1e-10  # when sigma goes to zero, shit hits the fan
+    sigma = sigma + 1e-10  # when sigma goes to zero, things tend to break
 
-    centroids /= 512
+    centroids /= 256
 
     # Calculates the euclidean distance between the centroid and the embedding
     # embedding [B, 3, X, Y, Z] -> euclidean_norm[B, 1, X, Y, Z]
@@ -107,16 +72,20 @@ def embedding_to_probability(embedding: torch.Tensor, centroids: torch.Tensor, s
                         centroids.shape[1],
                         embedding.shape[2],
                         embedding.shape[3],
-                        embedding.shape[4])).to(embedding.device)
+                        embedding.shape[4]), device=embedding.device)
 
-    sigma = (2 * sigma.to(embedding.device) ** 2)
+    sigma.pow_(2).mul_(2)
 
     for i in range(centroids.shape[1]):
+
         # Calculate euclidean distance between centroid and embedding for each pixel
-        euclidean_norm = (embedding - centroids[:, i, :].reshape(centroids.shape[0], 3, 1, 1, 1)).pow(2)
+        euclidean_norm = (embedding - centroids[:, i, :].view(centroids.shape[0], 3, 1, 1, 1)).pow(2)
 
         # Turn distance to probability and put it in preallocated matrix
-        prob[:, i, :, :, :] = torch.exp((euclidean_norm / sigma).mul(-1).sum(dim=1)).squeeze(1)
+        if sigma.shape[0] == 3:
+            prob[:, i, :, :, :] = torch.exp((euclidean_norm / sigma.view(centroids.shape[0], 3, 1, 1, 1)).mul(-1).sum(dim=1)).squeeze(1)
+        else:
+            prob[:, i, :, :, :] = torch.exp((euclidean_norm / sigma).mul(-1).sum(dim=1)).squeeze(1)
 
     return prob
 
@@ -143,9 +112,11 @@ def estimate_centroids(embedding: torch.Tensor, eps: float = 0.2, min_samples: i
     y = embedding[1, :]
     z = embedding[2, :]
 
-    ind_x = torch.logical_and(x > 0, x < embed_shape[2]/512)
-    ind_y = torch.logical_and(y > 0, y < embed_shape[3]/512)
-    ind_z = torch.logical_and(z > 0, z < embed_shape[4]/512)
+    scale = 256
+
+    ind_x = torch.logical_and(x > 0, x < embed_shape[2]/scale)
+    ind_y = torch.logical_and(y > 0, y < embed_shape[3]/scale)
+    ind_z = torch.logical_and(z > 0, z < embed_shape[4]/scale)
     ind = torch.logical_and(ind_x, ind_y)
     ind = torch.logical_and(ind, ind_z)
 
@@ -165,9 +136,9 @@ def estimate_centroids(embedding: torch.Tensor, eps: float = 0.2, min_samples: i
     # y = y[ind].mul(512).round().numpy()
     # z = z[ind].mul(512).round().numpy()
 
-    x = x.mul(512).round().numpy()
-    y = y.mul(512).round().numpy()
-    z = z.mul(512).round().numpy()
+    x = x.mul(scale).round().numpy()
+    y = y.mul(scale).round().numpy()
+    z = z.mul(scale).round().numpy()
 
 
     X = np.stack((x, y, z)).T

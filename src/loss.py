@@ -76,8 +76,8 @@ class tversky_loss(nn.Module):
         :param predicted:
         :param ground_truth:
         :param smooth:
-        :param alpha:
-        :param beta:
+        :param alpha: FALSE POSITIVE
+        :param beta: FALSE NEGATIVE
         :return:
         """
 
