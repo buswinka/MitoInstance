@@ -36,32 +36,35 @@ class jaccard_loss:
 
         return 1.0 - (intersection/union)
 
+class dice(nn.Module):
+    def __init__(self):
+        super(dice, self).__init__()
 
-def dice(pred: torch.Tensor, mask: torch.Tensor):
-    """
-    Calculates the dice loss between pred and mask
+    def __call__(self, pred: torch.Tensor, mask: torch.Tensor, **kwargs):
+        """
+        Calculates the dice loss between pred and mask
 
-    :param pred: torch.Tensor | probability map of shape [B,C,X,Y,Z] predicted by hcat.unet
-    :param mask: torch.Tensor | ground truth probability map of shape [B, C, X+dx, Y+dy, Z+dz] that will be cropped
-                 to identical size of pred
-    :return: torch.float | calculated dice loss
-    """
+        :param pred: torch.Tensor | probability map of shape [B,C,X,Y,Z] predicted by hcat.unet
+        :param mask: torch.Tensor | ground truth probability map of shape [B, C, X+dx, Y+dy, Z+dz] that will be cropped
+                     to identical size of pred
+        :return: torch.float | calculated dice loss
+        """
 
-    pred_shape = pred.shape
-    n_dim = len(pred_shape)
+        pred_shape = pred.shape
+        n_dim = len(pred_shape)
 
-    if n_dim == 5:
-        mask = mask[:, :, 0:pred_shape[2]:1, 0:pred_shape[3]:1, 0:pred_shape[4]:1]
-    elif n_dim == 4:
-        mask = mask[:, :, 0:pred_shape[2]:1, 0:pred_shape[3]:1]
-    else:
-        raise IndexError(f'Unexpected number of predicted mask dimensions. Expected 4 (2D) or 5 (3D) but got' +
-                         f' {n_dim} dimensions: {pred_shape}')
+        if n_dim == 5:
+            mask = mask[:, :, 0:pred_shape[2]:1, 0:pred_shape[3]:1, 0:pred_shape[4]:1]
+        elif n_dim == 4:
+            mask = mask[:, :, 0:pred_shape[2]:1, 0:pred_shape[3]:1]
+        else:
+            raise IndexError(f'Unexpected number of predicted mask dimensions. Expected 4 (2D) or 5 (3D) but got' +
+                             f' {n_dim} dimensions: {pred_shape}')
 
-    pred = torch.sigmoid(pred)
-    loss = (2 * (pred * mask).sum() + 1e-10) / ((pred + mask).sum() + 1e-10)
+        # pred = torch.sigmoid(pred)
+        loss = (2 * (pred * mask).sum() + 1e-10) / ((pred + mask).sum() + 1e-10)
 
-    return 1-loss
+        return 1-loss
 
 
 class tversky_loss(nn.Module):
@@ -69,7 +72,7 @@ class tversky_loss(nn.Module):
         super(tversky_loss, self).__init__()
 
     def forward(self, predicted: torch.Tensor, ground_truth: torch.Tensor, smooth: float = 1e-10,
-                alpha: float = 0.5, beta: float = 0.5):
+                alpha: float = 0.1, beta: float = 0.9):
         """
 
 
@@ -87,11 +90,15 @@ class tversky_loss(nn.Module):
         ground_truth = _crop(ground_truth, x=0, y=0, z=0,
                              w=predicted.shape[2], h=predicted.shape[3], d=predicted.shape[4])
 
+        #-------------------------------------------------#
+        # predicted = predicted * ground_truth  # EXPERIMENTAL
+        #-------------------------------------------------#
+
         true_positive = (predicted * ground_truth).sum()
         false_negative = ((1 - predicted) * ground_truth).sum()
         false_positive = (torch.logical_not(ground_truth) * predicted).sum().add(1e-10)
 
-        tversky = (true_positive + smooth) / (true_positive + alpha * false_positive + beta * false_negative + smooth)
+        tversky = (true_positive + smooth) / (true_positive + (alpha * false_positive) + (beta * false_negative) + smooth)
 
         return 1 - tversky
 

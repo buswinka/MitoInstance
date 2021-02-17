@@ -33,12 +33,10 @@ class dataset(DataLoader):
         for f in files:
             image_path = os.path.splitext(f)[0]
             image_path = os.path.splitext(image_path)[0] + '.tif'
-            image = torch.from_numpy(io.imread(image_path).astype(np.uint16) / 2 ** 16).unsqueeze(-1)
+            image = torch.from_numpy(io.imread(image_path).astype(np.uint16) / 2 ** 8).unsqueeze(-1)
 
             image = image.transpose(1, 3).transpose(0, -1).squeeze().unsqueeze(0)
-            mask = torch.from_numpy(io.imread(f)).transpose(0,-1).transpose(0,1).unsqueeze(0).int()                    # Import Mask
-
-
+            mask = torch.from_numpy(io.imread(f)).transpose(0, -1).transpose(0, 1).unsqueeze(0).int()  # Import Mask
 
             self.mask.append(mask.int())
             self.image.append(image.float())
@@ -81,53 +79,21 @@ class dataset(DataLoader):
                     data_dict = t.colormask_to_mask()(data_dict)
                     data_dict = t.adjust_centroids()(data_dict)
 
+                    if torch.any(torch.isnan(data_dict['centroids'])): # for whatever reason, sometimes centroids are nan
+                        continue
+
                     did_we_get_an_output = True if data_dict['masks'].shape[0] > 0 else False
 
             except RuntimeError:
                 continue
 
-
         return data_dict
 
     def step(self) -> None:
+        """
+        When called, shuffles the data for the next epoch of training
+
+        :return: None
+        """
         if self.random_ind:
             self.index = torch.randperm(len(self.mask))
-
-
-@torch.jit.script
-def colormask_to_torch_mask(colormask: torch.Tensor) -> torch.Tensor:
-    """
-
-    :param colormask: [C=1, X, Y, Z]
-    :return:
-    """
-    uni = torch.unique(colormask)
-    uni = uni[uni != 0]
-    num_cells = len(uni)
-
-    shape = (num_cells, colormask.shape[1], colormask.shape[2], colormask.shape[3])
-    mask = torch.zeros(shape)
-
-    for i, u in enumerate(uni):
-        mask[i, :, :, :] = (colormask[0, :, :, :] == u)
-
-    return mask
-
-
-@torch.jit.script
-def colormask_to_centroids(colormask: torch.Tensor) -> torch.Tensor:
-    uni = torch.unique(colormask)
-    uni = uni[uni != 0]
-    num_cells = len(uni)  # cells are denoted by integers 1->max_cell
-    shape = (num_cells, 3)
-    centroid = torch.zeros(shape)
-
-    for i, u in enumerate(uni):
-        indexes = torch.nonzero(colormask[0, :, :, :] == u).float()
-        centroid[i, :] = torch.mean(indexes, dim=0)
-
-    # centroid[:, 0] /= colormask.shape[1]
-    # centroid[:, 1] /= colormask.shape[2]
-    # centroid[:, 2] /= colormask.shape[3]
-
-    return centroid
