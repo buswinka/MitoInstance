@@ -2,6 +2,7 @@ import torch
 from src.transforms import _crop
 import torch.nn as nn
 
+
 class jaccard_loss:
     def __call__(self, predicted: torch.Tensor, ground_truth: torch.Tensor) -> torch.Tensor:
         """
@@ -35,6 +36,7 @@ class jaccard_loss:
         assert not torch.isnan(union)
 
         return 1.0 - (intersection/union)
+
 
 class dice(nn.Module):
     def __init__(self):
@@ -91,7 +93,7 @@ class tversky_loss(nn.Module):
                              w=predicted.shape[2], h=predicted.shape[3], d=predicted.shape[4])
 
         #-------------------------------------------------#
-        # predicted = predicted * ground_truth  # EXPERIMENTAL
+        predicted = predicted * ground_truth  # EXPERIMENTAL
         #-------------------------------------------------#
 
         true_positive = (predicted * ground_truth).sum()
@@ -125,6 +127,7 @@ class l1_loss(nn.Module):
         loss = torch.nn.L1Loss()
 
         return loss(predicted, ground_truth)
+
 
 if __name__ == '__main__':
 

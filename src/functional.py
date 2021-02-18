@@ -29,7 +29,7 @@ def vector_to_embedding(vector: torch.Tensor) -> torch.Tensor:
     :param vector:
     :return:
     """
-    num = 128
+    num = 512
     x_factor = 1 / num  # has to be a fixed size!
     y_factor = 1 / num
     z_factor = 1 / num
@@ -60,10 +60,11 @@ def embedding_to_probability(embedding: torch.Tensor, centroids: torch.Tensor, s
     :param sigma: torch.Tensor of shape = (1) or (embedding.shape)
     :return: [B, I, X, Y, Z] of probabilities for instance I
     """
+    num = 512
 
     sigma = sigma + 1e-10  # when sigma goes to zero, things tend to break
 
-    centroids = centroids / 128  # Half the size of the image so vectors can be +- 1
+    centroids = centroids / num  # Half the size of the image so vectors can be +- 1
 
     # Calculates the euclidean distance between the centroid and the embedding
     # embedding [B, 3, X, Y, Z] -> euclidean_norm[B, 1, X, Y, Z]
@@ -90,6 +91,15 @@ def embedding_to_probability(embedding: torch.Tensor, centroids: torch.Tensor, s
             prob[:, i, :, :, :] = torch.exp((euclidean_norm / sigma).mul(-1).sum(dim=1)).squeeze(1)
 
     return prob
+
+
+def learnable_centroid(embedding: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    for i in range(mask.shape[1]):
+        ind = torch.nonzero(embedding * mask[:, i, ...].unqueeze(1))  # [:, 5]
+        centroid = embedding[ind].mean(1)
+        print(centroid)
+
+    return centroids
 
 
 def estimate_maximum_sigma(data: Iterable = None) -> torch.Tensor:
